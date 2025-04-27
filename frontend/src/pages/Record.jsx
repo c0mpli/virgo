@@ -292,7 +292,7 @@ function RecordPage() {
 		};
 	}, []);
 
-	const [selectedAudioOption, setSelectedAudioOption] = useState("voice");
+	const [selectedAudioOption, setSelectedAudioOption] = useState("text");
 
 	return (
 		<div className="min-h-[100vh] pb-10">
@@ -368,7 +368,7 @@ function RecordPage() {
 					</div>
 					<div>
 						<div className="border-[1px] rounded-[10px] flex items-center w-[80%] mx-auto justify-center border-[#d7d7d7] gap-4 mt-5 py-4">
-							<div
+							{/* <div
 								className={`flex justify-center items-center gap-2 p-2 rounded-[10px] cursor-pointer ${
 									selectedAudioOption === "voice" ? "bg-[#D7D7D7]" : ""
 								}`}
@@ -376,7 +376,7 @@ function RecordPage() {
 							>
 								<Mic className="w-6 h-6 cursor-pointer" />
 								<p className="text-xl">Voice</p>
-							</div>
+							</div> */}
 							<div
 								className={`flex justify-center items-center gap-2 p-2 rounded-[10px] cursor-pointer ${
 									selectedAudioOption === "text" ? "bg-[#D7D7D7]" : ""
