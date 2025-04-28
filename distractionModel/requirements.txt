@@ -3,6 +3,8 @@ numpy==1.24.3
 flask
 flask-cors
 opencv-python
+cmake==4.0.0
+wheel==0.45.1
 dlib==19.24.8
 tensorflow<2.14.0  # Versions before 2.14 typically work with NumPy 1.x
 keras
