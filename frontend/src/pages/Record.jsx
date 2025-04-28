@@ -192,6 +192,10 @@ function RecordPage() {
 	}
 
 	useEffect(() => {
+		SpeechRecognition.startListening({ continuous: true });
+	}, []);
+
+	useEffect(() => {
 		if (listening) {
 			console.log("Listening...");
 		} else {
@@ -199,15 +203,15 @@ function RecordPage() {
 		}
 	}, [listening]);
 
-	useEffect(() => {
-		// Only start speech recognition if we're recording
-		if (isRecording) {
-			resetTranscript();
-			SpeechRecognition.startListening({ continuous: true });
-		} else {
-			SpeechRecognition.stopListening();
-		}
-	}, [isRecording, resetTranscript]);
+	// useEffect(() => {
+	// 	// Only start speech recognition if we're recording
+	// 	SpeechRecognition.startListening({ continuous: true });
+	// 	if (isRecording) {
+	// 		resetTranscript();
+	// 	} else {
+	// 		//SpeechRecognition.stopListening();
+	// 	}
+	// }, [isRecording, resetTranscript]);
 
 	const router = useRouter();
 
