@@ -48,14 +48,16 @@ import { TaskList } from "reactjs-tiptap-editor/tasklist";
 import { TextAlign } from "reactjs-tiptap-editor/textalign";
 import { TextUnderline } from "reactjs-tiptap-editor/textunderline";
 
-import Webcam from "react-webcam";
-import axios from "axios";
 import SpeechRecognition, {
 	useSpeechRecognition,
 } from "react-speech-recognition";
+import * as faceapi from "face-api.js";
 
-function convertBase64ToBlob(data) {
-	const base64 = data.result;
+function convertBase64ToBlob(base64Data) {
+	// Check if base64Data is a string or an object with a result property
+	const base64 =
+		typeof base64Data === "string" ? base64Data : base64Data.result;
+
 	if (typeof base64 !== "string") {
 		throw new Error("Provided input is not a string");
 	}
@@ -136,14 +138,14 @@ const extensions = [
 	Drawer.configure({
 		upload: (file) => {
 			// fake upload return base 64
-			const reader = new FileReader();
-			reader.readAsDataURL(file);
-
 			return new Promise((resolve) => {
-				setTimeout(() => {
-					const blob = convertBase64ToBlob(reader);
-					resolve(URL.createObjectURL(blob));
-				}, 300);
+				const reader = new FileReader();
+				reader.onloadend = () => {
+					setTimeout(() => {
+						resolve(URL.createObjectURL(file));
+					}, 300);
+				};
+				reader.readAsDataURL(file);
 			});
 		},
 	}),
@@ -156,7 +158,6 @@ function debounce(func, wait) {
 	let timeout;
 	return function (...args) {
 		clearTimeout(timeout);
-		// @ts-ignore
 		timeout = setTimeout(() => func.apply(this, args), wait);
 	};
 }
@@ -165,8 +166,6 @@ function RecordPage() {
 	const [content, setContent] = useState(DEFAULT);
 	const [isRecording, setIsRecording] = useState(false);
 	const [recordingTime, setRecordingTime] = useState(0);
-	const [concentrationIndex, setConcentrationIndex] = useState(null);
-	const webcamRef = useRef(null);
 	const intervalRef = useRef(null);
 	const timerRef = useRef(null);
 	const {
@@ -175,6 +174,18 @@ function RecordPage() {
 		resetTranscript,
 		browserSupportsSpeechRecognition,
 	} = useSpeechRecognition();
+
+	// Face detection states
+	const videoRef = useRef(null);
+	const canvasRef = useRef(null);
+	const [isLooking, setIsLooking] = useState(true);
+	const [faceDetected, setFaceDetected] = useState(false);
+	const [debugInfo, setDebugInfo] = useState({
+		modelsLoaded: false,
+		videoStarted: false,
+		detectionRunning: false,
+		lastError: "",
+	});
 
 	if (!browserSupportsSpeechRecognition) {
 		console.log("Browser does not support speech recognition.");
@@ -189,9 +200,14 @@ function RecordPage() {
 	}, [listening]);
 
 	useEffect(() => {
-		resetTranscript();
-		SpeechRecognition.startListening({ continuous: true });
-	}, []);
+		// Only start speech recognition if we're recording
+		if (isRecording) {
+			resetTranscript();
+			SpeechRecognition.startListening({ continuous: true });
+		} else {
+			SpeechRecognition.stopListening();
+		}
+	}, [isRecording, resetTranscript]);
 
 	const router = useRouter();
 
@@ -213,33 +229,6 @@ function RecordPage() {
 		return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
 	};
 
-	// Function to capture webcam snapshot and send to API
-	const captureAndSendSnapshot = async () => {
-		if (webcamRef.current) {
-			console.log("Capturing snapshot...");
-			const imageSrc = webcamRef.current.getScreenshot();
-
-			if (imageSrc) {
-				// Extract base64 data from the image src (remove the data:image/jpeg;base64, part)
-				const base64Image = imageSrc.split(",")[1];
-
-				try {
-					const response = await axios.post(
-						"http://127.0.0.1:5000/predict", // Changed from /api/v1/predict/
-						{ image: base64Image }
-					);
-
-					// Axios automatically returns data in the response.data property
-
-					setConcentrationIndex(response.data.concentration_index);
-					console.log("Concentration Index:", response.data);
-				} catch (error) {
-					console.error("Error sending snapshot to API:", error);
-				}
-			}
-		}
-	};
-
 	// Start recording function
 	const startRecording = () => {
 		setIsRecording(true);
@@ -249,24 +238,7 @@ function RecordPage() {
 		timerRef.current = setInterval(() => {
 			setRecordingTime((prev) => prev + 1);
 		}, 1000);
-
-		// Start capturing snapshots every second
 	};
-
-	useEffect(() => {
-		startRecording();
-
-		// Store the interval reference
-		const captureInterval = setInterval(() => {
-			captureAndSendSnapshot();
-		}, 1000); // Capture every second
-
-		// Clean up
-		return () => {
-			clearInterval(captureInterval);
-			stopRecording();
-		};
-	}, []);
 
 	// Stop recording function
 	const stopRecording = () => {
@@ -291,6 +263,335 @@ function RecordPage() {
 			if (timerRef.current) clearInterval(timerRef.current);
 		};
 	}, []);
+
+	// Load face-api models and start video feed
+	useEffect(() => {
+		const loadModels = async () => {
+			try {
+				setDebugInfo((prev) => ({
+					...prev,
+					lastError: "Starting model loading...",
+				}));
+
+				// The models folder should be in your public directory
+				const MODEL_URL = "/models";
+
+				// Load models one by one with logging
+				setDebugInfo((prev) => ({
+					...prev,
+					lastError: "Loading TinyFaceDetector...",
+				}));
+				await faceapi.nets.tinyFaceDetector.load(MODEL_URL);
+
+				setDebugInfo((prev) => ({
+					...prev,
+					lastError: "Loading FaceLandmark68Net...",
+				}));
+				await faceapi.nets.faceLandmark68Net.load(MODEL_URL);
+
+				setDebugInfo((prev) => ({
+					...prev,
+					lastError: "All models loaded successfully",
+				}));
+				setDebugInfo((prev) => ({ ...prev, modelsLoaded: true }));
+
+				startVideo();
+			} catch (error) {
+				console.error("Error loading models:", error);
+				setDebugInfo((prev) => ({
+					...prev,
+					lastError: `Error loading models: ${
+						error.message || "Unknown error"
+					}`,
+				}));
+			}
+		};
+
+		const startVideo = () => {
+			setDebugInfo((prev) => ({ ...prev, lastError: "Starting video..." }));
+			navigator.mediaDevices
+				.getUserMedia({
+					video: {
+						width: { ideal: 640 },
+						height: { ideal: 480 },
+						facingMode: "user",
+					},
+				})
+				.then((stream) => {
+					if (videoRef.current) {
+						videoRef.current.srcObject = stream;
+						setDebugInfo((prev) => ({
+							...prev,
+							videoStarted: true,
+							lastError: "Video started successfully",
+						}));
+					}
+				})
+				.catch((err) => {
+					console.error("Error accessing webcam: ", err);
+					setDebugInfo((prev) => ({
+						...prev,
+						lastError: `Error accessing webcam: ${
+							err.message || "Unknown error"
+						}`,
+					}));
+				});
+		};
+
+		loadModels();
+
+		// Cleanup on unmount
+		return () => {
+			if (videoRef.current && videoRef.current.srcObject) {
+				videoRef.current.srcObject.getTracks().forEach((track) => track.stop());
+			}
+		};
+	}, []);
+
+	// Setup canvas over video once video is playing
+	useEffect(() => {
+		if (!videoRef.current) return;
+
+		const video = videoRef.current;
+
+		video.addEventListener("playing", () => {
+			if (!canvasRef.current) return;
+
+			const canvas = canvasRef.current;
+			canvas.width = video.videoWidth;
+			canvas.height = video.videoHeight;
+
+			setDebugInfo((prev) => ({
+				...prev,
+				lastError: `Video playing. Dimensions: ${video.videoWidth}x${video.videoHeight}`,
+			}));
+		});
+	}, []);
+
+	// Eye tracking logic
+	useEffect(() => {
+		if (!debugInfo.modelsLoaded || !debugInfo.videoStarted) {
+			return;
+		}
+
+		const detectFace = async () => {
+			if (!videoRef.current || !canvasRef.current) {
+				setDebugInfo((prev) => ({
+					...prev,
+					lastError: "Video or canvas ref not ready",
+				}));
+				return;
+			}
+
+			const video = videoRef.current;
+			const canvas = canvasRef.current;
+
+			// Make sure video is actually playing
+			if (video.paused || video.ended || !video.videoWidth) {
+				return;
+			}
+
+			setDebugInfo((prev) => ({
+				...prev,
+				detectionRunning: true,
+				lastError: "Running face detection...",
+			}));
+
+			try {
+				// Set dimensions each time to make sure they're correct
+				canvas.width = video.videoWidth;
+				canvas.height = video.videoHeight;
+				const displaySize = {
+					width: video.videoWidth,
+					height: video.videoHeight,
+				};
+				faceapi.matchDimensions(canvas, displaySize);
+
+				// Run detection with explicit options
+				const options = new faceapi.TinyFaceDetectorOptions({
+					inputSize: 320,
+					scoreThreshold: 0.5,
+				});
+
+				const detections = await faceapi
+					.detectAllFaces(video, options)
+					.withFaceLandmarks();
+
+				const ctx = canvas.getContext("2d");
+				ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+				if (detections && detections.length > 0) {
+					setFaceDetected(true);
+					setDebugInfo((prev) => ({
+						...prev,
+						lastError: `Face detected! Found ${detections.length} face(s)`,
+					}));
+
+					// Draw face detections
+					const resizedDetections = faceapi.resizeResults(
+						detections,
+						displaySize
+					);
+					faceapi.draw.drawDetections(canvas, resizedDetections);
+					faceapi.draw.drawFaceLandmarks(canvas, resizedDetections);
+
+					// Process landmarks
+					if (detections[0].landmarks) {
+						const landmarks = detections[0].landmarks;
+						const leftEye = landmarks.getLeftEye();
+						const rightEye = landmarks.getRightEye();
+
+						if (
+							leftEye &&
+							rightEye &&
+							leftEye.length > 0 &&
+							rightEye.length > 0
+						) {
+							const lookingStatus = analyzeEyeGaze(leftEye, rightEye);
+							setIsLooking(lookingStatus);
+						}
+					}
+				} else {
+					setFaceDetected(false);
+					setIsLooking(false);
+					setDebugInfo((prev) => ({
+						...prev,
+						lastError: "No faces detected in frame",
+					}));
+				}
+			} catch (error) {
+				console.error("Error in face detection:", error);
+				setDebugInfo((prev) => ({
+					...prev,
+					lastError: `Detection error: ${error.message || "Unknown error"}`,
+				}));
+
+				// Reset detection if error persists
+				setDebugInfo((prev) => ({ ...prev, detectionRunning: false }));
+			}
+		};
+
+		const analyzeEyeGaze = (leftEye, rightEye) => {
+			try {
+				// Draw eyes for debugging
+				const canvas = canvasRef.current;
+				const ctx = canvas.getContext("2d");
+
+				// Draw eye points in red
+				ctx.fillStyle = "red";
+				leftEye.forEach((point) => {
+					ctx.beginPath();
+					ctx.arc(point.x, point.y, 2, 0, 2 * Math.PI);
+					ctx.fill();
+				});
+
+				rightEye.forEach((point) => {
+					ctx.beginPath();
+					ctx.arc(point.x, point.y, 2, 0, 2 * Math.PI);
+					ctx.fill();
+				});
+
+				// Calculate eye centers
+				const leftEyeCenter = {
+					x: leftEye.reduce((sum, pt) => sum + pt.x, 0) / leftEye.length,
+					y: leftEye.reduce((sum, pt) => sum + pt.y, 0) / leftEye.length,
+				};
+
+				const rightEyeCenter = {
+					x: rightEye.reduce((sum, pt) => sum + pt.x, 0) / rightEye.length,
+					y: rightEye.reduce((sum, pt) => sum + pt.y, 0) / rightEye.length,
+				};
+
+				// Draw eye centers for debugging
+				ctx.fillStyle = "blue";
+				ctx.beginPath();
+				ctx.arc(leftEyeCenter.x, leftEyeCenter.y, 4, 0, 2 * Math.PI);
+				ctx.fill();
+
+				ctx.beginPath();
+				ctx.arc(rightEyeCenter.x, rightEyeCenter.y, 4, 0, 2 * Math.PI);
+				ctx.fill();
+
+				// Draw line between eyes
+				ctx.strokeStyle = "yellow";
+				ctx.lineWidth = 2;
+				ctx.beginPath();
+				ctx.moveTo(leftEyeCenter.x, leftEyeCenter.y);
+				ctx.lineTo(rightEyeCenter.x, rightEyeCenter.y);
+				ctx.stroke();
+
+				// Calculate eye direction using landmarks
+				// Eye landmarks: inner corner (0), top (1,2), outer corner (3), bottom (4,5)
+				const leftEyeInner = leftEye[0];
+				const leftEyeOuter = leftEye[3];
+				const rightEyeInner = rightEye[0];
+				const rightEyeOuter = rightEye[3];
+
+				// For vertical gaze
+				const leftEyeTop = {
+					x: (leftEye[1].x + leftEye[2].x) / 2,
+					y: (leftEye[1].y + leftEye[2].y) / 2,
+				};
+
+				const leftEyeBottom = {
+					x: (leftEye[4].x + leftEye[5].x) / 2,
+					y: (leftEye[4].y + leftEye[5].y) / 2,
+				};
+
+				const rightEyeTop = {
+					x: (rightEye[1].x + rightEye[2].x) / 2,
+					y: (rightEye[1].y + rightEye[2].y) / 2,
+				};
+
+				const rightEyeBottom = {
+					x: (rightEye[4].x + rightEye[5].x) / 2,
+					y: (rightEye[4].y + rightEye[5].y) / 2,
+				};
+
+				// Calculate eye ratios
+				// For horizontal gaze - compare inner/outer corner positions vs center
+				const leftEyeHorizontalRatio =
+					(leftEyeCenter.x - leftEyeInner.x) /
+					(leftEyeOuter.x - leftEyeInner.x);
+
+				const rightEyeHorizontalRatio =
+					(rightEyeCenter.x - rightEyeInner.x) /
+					(rightEyeOuter.x - rightEyeInner.x);
+
+				// For vertical gaze
+				const leftEyeVerticalRatio =
+					(leftEyeCenter.y - leftEyeTop.y) / (leftEyeBottom.y - leftEyeTop.y);
+
+				const rightEyeVerticalRatio =
+					(rightEyeCenter.y - rightEyeTop.y) /
+					(rightEyeBottom.y - rightEyeTop.y);
+
+				// Define acceptable ranges
+				const horizontalThreshold = 0.2; // How far from center is acceptable
+				const verticalThreshold = 0.2;
+
+				// Center is around 0.5 for both eyes
+				const lookingHorizontal =
+					Math.abs(leftEyeHorizontalRatio - 0.5) < horizontalThreshold &&
+					Math.abs(rightEyeHorizontalRatio - 0.5) < horizontalThreshold;
+
+				const lookingVertical =
+					Math.abs(leftEyeVerticalRatio - 0.5) < verticalThreshold &&
+					Math.abs(rightEyeVerticalRatio - 0.5) < verticalThreshold;
+
+				return lookingHorizontal && lookingVertical;
+			} catch (error) {
+				console.error("Error analyzing eye gaze:", error);
+				return false;
+			}
+		};
+
+		// Run detection at regular intervals
+		const intervalId = setInterval(detectFace, 200); // 5 FPS for better performance
+
+		// Clean up on unmount
+		return () => clearInterval(intervalId);
+	}, [debugInfo.modelsLoaded, debugInfo.videoStarted]);
 
 	const [selectedAudioOption, setSelectedAudioOption] = useState("text");
 
@@ -342,28 +643,31 @@ function RecordPage() {
 				</div>
 				<div className="border-l-[1px] border-[#d7d7d7] min-h-[84vh] ">
 					<div className="mt-3 ml-5 mx-auto flex flex-col justify-center items-center w-full">
-						<Webcam
-							ref={webcamRef}
-							videoConstraints={{
-								facingMode: "user",
-								width: 1280,
-								height: 720,
-							}}
-							mirrored={true}
-							screenshotFormat="image/jpeg"
-							className="w-full h-full"
-							onUserMedia={() => {}}
-							onUserMediaError={() => {}}
-						/>
+						<div className="relative w-full">
+							<video
+								ref={videoRef}
+								autoPlay
+								playsInline
+								muted
+								className="w-full h-full"
+								onPlay={() =>
+									setDebugInfo((prev) => ({ ...prev, videoStarted: true }))
+								}
+							/>
+							<canvas
+								ref={canvasRef}
+								className="absolute top-0 left-0 w-full h-full"
+							/>
+						</div>
 
 						<div
 							className={`mt-4 p-3 ${
-								concentrationIndex > 0.3
+								isLooking
 									? "bg-green-200 border-1 border-green-800"
 									: "bg-red-200 border-1 border-red-800"
 							} rounded-md w-full flex justify-center items-center`}
 						>
-							{concentrationIndex > 0.3 ? "All good :)" : "Please refocus!"}
+							{isLooking ? "All good :)" : "Please refocus!"}
 						</div>
 					</div>
 					<div>
